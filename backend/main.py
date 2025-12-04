@@ -129,7 +129,7 @@ def create_skin_mask(img_bgr: np.ndarray, landmarks: np.ndarray) -> np.ndarray:
     face_height = max(chin_y - brow_center_y, 1.0)
 
     # Tinggi jidat yang kamu suka
-    forehead_height = 0.57 * face_height
+    forehead_height = 0.40 * face_height
 
     # Titik jidat di atas alis
     forehead_points = []

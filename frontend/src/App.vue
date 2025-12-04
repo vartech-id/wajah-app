@@ -136,7 +136,7 @@ const processImage = async () => {
       <div>
         <div>
           <h3>Sebelum</h3>
-          <img
+          <img class="image-result"
             v-if="originalPreviewUrl"
             :src="originalPreviewUrl"
             alt="Before"
@@ -144,7 +144,7 @@ const processImage = async () => {
         </div>
         <div>
           <h3>Sesudah</h3>
-          <img
+          <img class="image-result"
             v-if="processedImageUrl"
             :src="processedImageUrl"
             alt="After"
@@ -154,3 +154,8 @@ const processImage = async () => {
     </div>
   </div>
 </template>
+<style>
+.image-result{
+  max-width: 400px;
+}
+</style>
