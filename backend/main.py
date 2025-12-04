@@ -145,6 +145,10 @@ def create_skin_mask(img_bgr: np.ndarray, landmarks: np.ndarray) -> np.ndarray:
 
     # Sedikit blur supaya tepi wajah halus
     mask_face = cv2.GaussianBlur(mask_face, (0, 0), sigmaX=5, sigmaY=5)
+    # Refine supaya tidak bleed ke rambut/telinga
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    mask_face = cv2.erode(mask_face, kernel, iterations=1)
+    mask_face = cv2.dilate(mask_face, kernel, iterations=1)
 
     # ---------- 2) MASK FITUR (MATA + DALAM BIBIR) ----------
 
@@ -215,6 +219,85 @@ def create_under_eye_mask(img_bgr: np.ndarray, landmarks: np.ndarray) -> np.ndar
     return mask.astype(np.float32)
 
 
+def compute_edge_preserve_mask(img_bgr: np.ndarray) -> np.ndarray:
+    """
+    Mask untuk menjaga detail tepi (rambut, alis, garis mata) agar smoothing
+    tidak bikin blur keras di area bertekstur.
+    """
+    gray = (np.clip(img_bgr, 0.0, 1.0) * 255.0).astype(np.uint8)
+    gray = cv2.cvtColor(gray, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(gray, 60, 140)
+    edges = cv2.GaussianBlur(edges, (0, 0), sigmaX=1.4, sigmaY=1.4)
+    mask = 1.0 - edges.astype(np.float32) / 255.0
+    mask = cv2.GaussianBlur(mask, (0, 0), sigmaX=1.0, sigmaY=1.0)
+    return np.clip(mask, 0.25, 1.0).astype(np.float32)
+
+
+def create_cheek_highlight_mask(img_shape, landmarks: np.ndarray) -> np.ndarray:
+    """
+    Mask lembut untuk area pipi supaya efek 'lembab' bisa nambah glow lokal.
+    """
+    h, w = img_shape[:2]
+    mask = np.zeros((h, w), dtype=np.float32)
+
+    left_eye_outer = landmarks[36]
+    right_eye_outer = landmarks[45]
+    left_mouth = landmarks[48]
+    right_mouth = landmarks[54]
+
+    left_center = (0.55 * left_mouth + 0.45 * left_eye_outer).astype(np.int32)
+    right_center = (0.55 * right_mouth + 0.45 * right_eye_outer).astype(np.int32)
+
+    eye_width = np.linalg.norm(right_eye_outer - left_eye_outer)
+    radius = int(max(12, eye_width * 0.18))
+
+    for cx, cy in [left_center, right_center]:
+        cv2.circle(mask, (int(cx), int(cy)), radius, 1.0, thickness=-1)
+
+    mask = cv2.GaussianBlur(mask, (0, 0), sigmaX=radius * 0.6, sigmaY=radius * 0.6)
+    return np.clip(mask, 0.0, 1.0).astype(np.float32)
+
+
+def create_wrinkle_mask(img_shape, landmarks: np.ndarray, under_eye_mask: np.ndarray) -> np.ndarray:
+    """
+    Mask agresif untuk area rentan kerutan:
+    - Kantong mata (reuse under_eye_mask)
+    - Dahi dekat alis
+    - Lipatan nasolabial (hidung ke sudut bibir)
+    """
+    h, w = img_shape[:2]
+    mask = np.zeros((h, w), dtype=np.float32)
+    mask = np.maximum(mask, under_eye_mask)
+
+    # Dahi: kotak di atas alis
+    brow_pts = landmarks[17:27]
+    x, y, bw, bh = cv2.boundingRect(brow_pts)
+    y1 = max(0, y - int(bh * 0.9))
+    y2 = min(h, y + int(bh * 0.4))
+    x1 = max(0, x - int(bw * 0.1))
+    x2 = min(w, x + bw + int(bw * 0.1))
+    cv2.rectangle(mask, (x1, y1), (x2, y2), 0.6, thickness=-1)
+
+    # Nasolabial fold kiri/kanan
+    left_poly = np.array([landmarks[31], landmarks[33], landmarks[48], landmarks[3]], dtype=np.int32)
+    right_poly = np.array([landmarks[35], landmarks[33], landmarks[54], landmarks[13]], dtype=np.int32)
+    cv2.fillConvexPoly(mask, left_poly, 0.7)
+    cv2.fillConvexPoly(mask, right_poly, 0.7)
+
+    mask = cv2.GaussianBlur(mask, (0, 0), sigmaX=8, sigmaY=8)
+    return np.clip(mask, 0.0, 1.0).astype(np.float32)
+
+
+def boost_saturation(img_bgr: np.ndarray, factor: float) -> np.ndarray:
+    """Sedikit naikkan/kurangi saturasi tanpa mengganggu luminance."""
+    hsv = cv2.cvtColor((np.clip(img_bgr, 0.0, 1.0) * 255.0).astype(np.uint8), cv2.COLOR_BGR2HSV)
+    h, s, v = cv2.split(hsv)
+    s = np.clip(s.astype(np.float32) * factor, 0, 255).astype(np.uint8)
+    hsv = cv2.merge([h, s, v])
+    out = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR).astype(np.float32) / 255.0
+    return out
+
+
 # -------------------------------------------------------------------
 # Core beautify engine
 # -------------------------------------------------------------------
@@ -262,25 +345,42 @@ def beautify_image(img_pil: Image.Image, preset: str) -> Image.Image:
     else:
         mean_L = 128.0
 
+    # Mask pendukung
+    edge_preserve_mask = compute_edge_preserve_mask(img_bgr)
+    cheek_mask = create_cheek_highlight_mask(img_bgr.shape, landmarks)
+    wrinkle_mask = create_wrinkle_mask(img_bgr.shape, landmarks, under_eye_mask)
+
     # Parameter preset
     if preset == "cerah":
+        target_L = 168.0
+        delta_L = np.clip(target_L - mean_L, 0, 18)
+        smooth_strength = 0.28
+        eye_smooth_strength = 0.18
+        glow_strength = 0.07
+        saturation_boost = 1.04
+        hydration_highlight = 0.0
+        wrinkle_soften = 0.0
+        detail_mix = 0.10
+    elif preset == "lembab":
         target_L = 160.0
         delta_L = np.clip(target_L - mean_L, 0, 20)
-        smooth_strength = 0.3
-        eye_smooth_strength = 0.2
-        glow_strength = 0.05
-    elif preset == "lembab":
-        target_L = 155.0
-        delta_L = np.clip(target_L - mean_L, 0, 18)
-        smooth_strength = 0.5
-        eye_smooth_strength = 0.35
-        glow_strength = 0.12
+        smooth_strength = 0.52
+        eye_smooth_strength = 0.42
+        glow_strength = 0.16
+        saturation_boost = 1.08
+        hydration_highlight = 0.22
+        wrinkle_soften = 0.0
+        detail_mix = 0.06
     elif preset == "kerutan":
-        target_L = 150.0
-        delta_L = np.clip(target_L - mean_L, 0, 12)
-        smooth_strength = 0.35
-        eye_smooth_strength = 0.6
-        glow_strength = 0.03
+        target_L = 155.0
+        delta_L = np.clip(target_L - mean_L, 0, 14)
+        smooth_strength = 0.40
+        eye_smooth_strength = 0.75
+        glow_strength = 0.05
+        saturation_boost = 1.02
+        hydration_highlight = 0.05
+        wrinkle_soften = 0.70
+        detail_mix = 0.04
     else:
         # Fallback: tidak diubah
         return img_pil
@@ -313,8 +413,10 @@ def beautify_image(img_pil: Image.Image, preset: str) -> Image.Image:
     orig = img_bgr_tone
     smooth = base * smooth_strength + orig * (1.0 - smooth_strength)
 
+    edge_skin_mask = np.clip(skin_mask * edge_preserve_mask, 0.0, 1.0)
     skin_mask_3c = np.dstack([skin_mask] * 3)
-    img_smooth_skin = orig * (1.0 - skin_mask_3c) + smooth * skin_mask_3c
+    edge_skin_mask_3c = np.dstack([edge_skin_mask] * 3)
+    img_smooth_skin = orig * (1.0 - edge_skin_mask_3c) + smooth * edge_skin_mask_3c
 
     # Extra smoothing bawah mata
     if eye_smooth_strength > 0:
@@ -332,6 +434,28 @@ def beautify_image(img_pil: Image.Image, preset: str) -> Image.Image:
         blur_glow = cv2.GaussianBlur(result, (0, 0), sigmaX=sigma * 0.8, sigmaY=sigma * 0.8)
         glow_layer = blur_glow
         result = result * (1.0 - glow_strength * skin_mask_3c) + glow_layer * (glow_strength * skin_mask_3c)
+
+    # Highlight lembab di pipi / area high light
+    if hydration_highlight > 0:
+        cheek_3c = np.dstack([cheek_mask] * 3)
+        lifted = np.clip(result + hydration_highlight * 0.4, 0.0, 1.0)
+        result = result * (1.0 - hydration_highlight * cheek_3c) + lifted * (hydration_highlight * cheek_3c)
+
+    # Softening lebih kuat di area kerutan
+    if wrinkle_soften > 0:
+        wrinkle_3c = np.dstack([wrinkle_mask] * 3)
+        wrinkle_blur = cv2.bilateralFilter((result * 255).astype(np.uint8), 9, 30, 9)
+        wrinkle_blur = wrinkle_blur.astype(np.float32) / 255.0
+        result = result * (1.0 - wrinkle_soften * wrinkle_3c) + wrinkle_blur * (wrinkle_soften * wrinkle_3c)
+
+    # Sedikit boost saturasi sesuai preset
+    if abs(saturation_boost - 1.0) > 1e-3:
+        result = boost_saturation(result, saturation_boost)
+
+    # Re-inject detail halus supaya tidak terlihat plastik, tapi tetap aman di tepi
+    if detail_mix > 0:
+        detail_mask = np.dstack([edge_preserve_mask * skin_mask] * 3)
+        result = np.clip(result + hf * detail_mix * detail_mask, 0.0, 1.0)
 
     result = np.clip(result, 0.0, 1.0)
     out_pil = cv_to_pil(result)
