@@ -133,7 +133,7 @@ const processImage = async () => {
 
     <div v-if="originalPreviewUrl || processedImageUrl">
       <h2>Before / After</h2>
-      <div>
+      <div class="result-holder">
         <div>
           <h3>Sebelum</h3>
           <img class="image-result"
@@ -157,5 +157,10 @@ const processImage = async () => {
 <style>
 .image-result{
   max-width: 400px;
+}
+
+.result-holder{
+  display: flex;
+  flex-direction: row;
 }
 </style>

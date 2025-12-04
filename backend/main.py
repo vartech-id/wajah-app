@@ -298,6 +298,15 @@ def boost_saturation(img_bgr: np.ndarray, factor: float) -> np.ndarray:
     return out
 
 
+def apply_unsharp_mask(img_bgr: np.ndarray, amount: float = 0.05, radius: float = 1.0) -> np.ndarray:
+    """
+    Unsharp mask ringan untuk balikin tekstur halus dan bikin hasil tetap natural.
+    """
+    blur = cv2.GaussianBlur(img_bgr, (0, 0), sigmaX=radius, sigmaY=radius)
+    enhanced = img_bgr + amount * (img_bgr - blur)
+    return np.clip(enhanced, 0.0, 1.0)
+
+
 # -------------------------------------------------------------------
 # Core beautify engine
 # -------------------------------------------------------------------
@@ -352,35 +361,44 @@ def beautify_image(img_pil: Image.Image, preset: str) -> Image.Image:
 
     # Parameter preset
     if preset == "cerah":
-        target_L = 168.0
-        delta_L = np.clip(target_L - mean_L, 0, 18)
-        smooth_strength = 0.28
+        target_L = 165.0
+        delta_L = np.clip(target_L - mean_L, 0, 16)
+        smooth_strength = 0.24
         eye_smooth_strength = 0.18
-        glow_strength = 0.07
-        saturation_boost = 1.04
+        glow_strength = 0.08
+        saturation_boost = 1.06
         hydration_highlight = 0.0
         wrinkle_soften = 0.0
-        detail_mix = 0.10
+        detail_mix = 0.14
+        unsharp_amount = 0.06
+        unsharp_radius = 1.2
+        edge_enhance_mix = 0.65
     elif preset == "lembab":
-        target_L = 160.0
-        delta_L = np.clip(target_L - mean_L, 0, 20)
-        smooth_strength = 0.52
-        eye_smooth_strength = 0.42
-        glow_strength = 0.16
-        saturation_boost = 1.08
-        hydration_highlight = 0.22
+        target_L = 158.0
+        delta_L = np.clip(target_L - mean_L, 0, 18)
+        smooth_strength = 0.47
+        eye_smooth_strength = 0.40
+        glow_strength = 0.18
+        saturation_boost = 1.10
+        hydration_highlight = 0.25
         wrinkle_soften = 0.0
-        detail_mix = 0.06
+        detail_mix = 0.10
+        unsharp_amount = 0.05
+        unsharp_radius = 1.0
+        edge_enhance_mix = 0.55
     elif preset == "kerutan":
-        target_L = 155.0
-        delta_L = np.clip(target_L - mean_L, 0, 14)
-        smooth_strength = 0.40
-        eye_smooth_strength = 0.75
+        target_L = 153.0
+        delta_L = np.clip(target_L - mean_L, 0, 12)
+        smooth_strength = 0.38
+        eye_smooth_strength = 0.72
         glow_strength = 0.05
         saturation_boost = 1.02
-        hydration_highlight = 0.05
-        wrinkle_soften = 0.70
-        detail_mix = 0.04
+        hydration_highlight = 0.07
+        wrinkle_soften = 2.00
+        detail_mix = 0.08
+        unsharp_amount = 0.04
+        unsharp_radius = 1.0
+        edge_enhance_mix = 0.45
     else:
         # Fallback: tidak diubah
         return img_pil
@@ -456,6 +474,12 @@ def beautify_image(img_pil: Image.Image, preset: str) -> Image.Image:
     if detail_mix > 0:
         detail_mask = np.dstack([edge_preserve_mask * skin_mask] * 3)
         result = np.clip(result + hf * detail_mix * detail_mask, 0.0, 1.0)
+
+    # Clarity ringan pada tepi penting supaya tetap crisp, tanpa bikin plastik
+    if edge_enhance_mix > 0 and unsharp_amount > 0:
+        sharp = apply_unsharp_mask(result, amount=unsharp_amount, radius=unsharp_radius)
+        edge_mask_3c = np.dstack([edge_preserve_mask] * 3)
+        result = result * (1.0 - edge_enhance_mix * edge_mask_3c) + sharp * (edge_enhance_mix * edge_mask_3c)
 
     result = np.clip(result, 0.0, 1.0)
     out_pil = cv_to_pil(result)
